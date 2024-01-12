@@ -9,7 +9,10 @@
 #include <stdint.h>
 #include <time.h>
 
+// Parameters
 #include "settings.h"
+// Prototypes
+#include "xDripMonitor.h"
 
 // WIFI settings
 const char* ssid = WIFI_SSID;
@@ -21,18 +24,19 @@ const char* ntpServer = "pool.ntp.org";
 unsigned long epochTime = 0; 
 
 //Your Domain name with URL path or IP address with path
-String serverName = "http://motog625g:17580";
+String hostName = XDRIP_HOSTNAME;
+String serverName;
 const char* apiSecret = XDRIP_API_SECRET;
 
 // the following variables are unsigned longs because the time, measured in
 // milliseconds, will quickly become a bigger number than can be stored in an int.
 unsigned long lastTime = 0;
 
-// main loop timer - set to 30s
-unsigned long timerDelay = 30000;
+// main loop timer
+unsigned long timerDelay = XDRIP_POLLING_INTERVAL;
 
 // DISPLAY
-U8G2_SSD1306_128X64_NONAME_F_SW_I2C u8g2(U8G2_R0,/* clock or SCL=*/4,/* data or SDA=*/5,/* reset=*/ U8X8_PIN_NONE);
+U8G2_SSD1306_128X64_NONAME_F_SW_I2C u8g2(U8G2_R0,/* clock or SCL=*/OLED_SCL,/* data or SDA=*/OLED_SDA,/* reset=*/ U8X8_PIN_NONE);
 
 unsigned long currentMillis = 0;   // stores the value of millis() in each iteration of loop()
 unsigned long delayedMillis = 0;   // stores the value of millis() in each iteration of loop() delayed from wificonnection
@@ -41,16 +45,29 @@ const int wifiRetryInterval = 500; // number of millisecs between retry to conne
 unsigned long previousWifiBlinkMillis = 0;
 bool wifiBlinkStatus = false;
 
-// POSITIONS {x,y}
-const int arrowUpPosition[] = {95,0};
+// POSITIONS                    { x,y }
+enum axis {x,y};
+const int arrowUpPosition[]   = {95,11};
 const int arrowFlatPosition[] = {95,27};
 const int arrowDownPosition[] = {95,42};
 
-const int deltaPosition[] = {0,64};
-const int datePosition[] = {50,64};
+const int deltaPosition[]     = { 0,57};
+const int datePosition[]      = {50,57};
+
+// OLED DISPLAY VALUES
+enum values {sgv,delta,direction,minutesElapsed};
+String curValues[] = {"","","",""};
+String oldValues[] = {"","","",""};
+String deltaUnitOfMeasure = "mg/dl";
+String minutesElapsedSuffix = "min fa";
 
 void setup() {
   Serial.begin(115200);
+  serverName = XDRIP_PROTOCOL;
+  serverName+= "://";
+  serverName+= XDRIP_HOSTNAME;
+  serverName+= ":";
+  serverName+= XDRIP_PORT;
   
   // clear display
   u8g2.begin();
@@ -63,31 +80,43 @@ void setup() {
 
   WiFi.begin(ssid, password);
   configTime(0, 0, ntpServer);
-  
-  // OLED test
-  printMissingPhone();
-  printWifi();
-  printJsonError();
-  printMainText("888");
-  printArrow("Flat");
-  printArrow("FortyFiveDown");
-  printArrow("FortyFiveUp");
-  printArrow("DoubleUp");
-  printArrow("SingleDown");
-  printArrow("DoubleDown");
-  printDelta(8);
-  printDate(8);
-  delay(2000);
-  removeDate();
-  removeDelta();
-  removeArrow();
-  removeMainText();
-  removeJsonError();
-  removeWifi();
-  removeMissingPhone();
 }
 
 void loop() {
+  if (lastTime == 0) {
+    // OLED test
+    
+    printMissingPhone();
+    printWifi();
+    printJsonError();
+    printArrow("Flat");
+    printArrow("FortyFiveDown");
+    printArrow("FortyFiveUp");
+    printArrow("DoubleUp");
+    printArrow("SingleDown");
+    printArrow("DoubleDown");
+    printDelta(8);
+    printDate(8);
+    printMainText("888");
+    u8g2.sendBuffer();
+    delay(5000);
+
+    removeDelta(true);
+    printDelta(88, true);
+    delay(5000);
+
+    removeDate();
+    removeDelta();
+    removeArrow();
+    removeMainText();
+    removeJsonError();
+    removeWifi();
+    removeMissingPhone();
+    
+    u8g2.sendBuffer();
+  }
+
+
   currentMillis = millis();
 
   // Wifi Status
@@ -96,7 +125,7 @@ void loop() {
     delay(wifiRetryInterval);
     return;
   }
-  if (!wifiBlinkStatus) printWifi();
+  if (!wifiBlinkStatus) printWifi(true);
   
 
   // main loop
@@ -127,7 +156,7 @@ void loop() {
         Serial.print("Epoch Time: ");
         Serial.println(epochTime);
       }
-      removeMissingPhone();
+      removeMissingPhone(true);
       String response = http.getString();
       JSONVar myObject = JSON.parse(response);
       Serial.println(response);
@@ -137,7 +166,7 @@ void loop() {
         printJsonError();
         http.end();
       } else {
-        removeJsonError();
+        removeJsonError(true);
         // Get infos from response
         /*
         String ts = myObject[0]["dateString"];
@@ -193,12 +222,13 @@ void loop() {
         Serial.println(direction);
         Serial.println(minutesElapsed);
 
-        printMainText(sgv);
         printArrow(direction);
         printDelta(delta);
         if (epochTime > 0) {
           printDate(minutesElapsed);
         }
+        printMainText(sgv);
+        u8g2.sendBuffer();
       }
     } else {
       removeMainText();
@@ -206,6 +236,7 @@ void loop() {
       removeDelta();
       removeArrow();
       printMissingPhone();
+      u8g2.sendBuffer();
     }
     http.end();
     lastTime = millis();
@@ -224,93 +255,114 @@ unsigned long getTime() {
   return now;
 }
 
-void printDate(int value) {
+void printDate(int value, bool sendBuffer) {
   String text = String(value);
-  text = text + " min fa";
-  removeDate();
-  u8g2.setDrawColor(1);
-  u8g2.setFont(u8g2_font_courR08_tf); //7x11
-  u8g2.drawStr(datePosition[0],datePosition[1],text.c_str());
-  u8g2.sendBuffer(); 
+  if (curValues[minutesElapsed] != text) {
+    removeDate();
+    u8g2.setDrawColor(1);
+    u8g2.setFont(u8g2_font_crox3hb_tn); //9x17
+    u8g2.drawStr(datePosition[x],datePosition[y],text.c_str());
+    // Serial.println(curValues[minutesElapsed]);
+    u8g2.setFont(u8g2_font_04b_03b_tr); //5x6
+    int startUOfMX = datePosition[x]+(text.length()*9/2)-(minutesElapsedSuffix.length()*5/2)+4;
+    if (startUOfMX < 0) startUOfMX = 0;
+    u8g2.drawStr(startUOfMX,62,minutesElapsedSuffix.c_str()); 
+    if (sendBuffer) u8g2.sendBuffer();
+    curValues[minutesElapsed] = text;
+  }
 }
-void removeDate() {
+void removeDate(bool sendBuffer) {
   u8g2.setDrawColor(0);
-  u8g2.drawBox(datePosition[0],datePosition[1]-7,120,11);
-  u8g2.sendBuffer();
+  int startX = datePosition[x]-(minutesElapsedSuffix.length()*6/2)+4;
+  int startY = datePosition[y]-15;
+  int length = (curValues[minutesElapsed].length()+1)*9;
+  int length2 = minutesElapsedSuffix.length()*6;
+  length = length > length2 ? length : length2;
+  int height = 60-datePosition[y]+17+6;
+  u8g2.drawBox(startX,startY,length,height);
+  if (sendBuffer) u8g2.sendBuffer();
 }
 
-void printDelta(int value) {
+void printDelta(int value, bool sendBuffer) {
   String text = String(value);
   if (!text.startsWith("-") && !text.startsWith("+")) {
     text = "+" + text;
   }
-  removeDelta();
-  u8g2.setDrawColor(1);
-  u8g2.setFont(u8g2_font_crox5h_tn); //12x25
-  u8g2.drawStr(deltaPosition[0],deltaPosition[1],text.c_str()); 
-  u8g2.setFont(u8g2_font_04b_03b_tr); //5x6
-  u8g2.drawStr(deltaPosition[0] + (text.length()*15),deltaPosition[1]-12,"mg/dl"); 
-  u8g2.sendBuffer(); 
+  if (curValues[delta] != text) {
+    removeDelta();
+    u8g2.setDrawColor(1);
+    u8g2.setFont(u8g2_font_crox3hb_tn); //9x17
+    u8g2.drawStr(deltaPosition[x],deltaPosition[y],text.c_str()); 
+    u8g2.setFont(u8g2_font_04b_03b_tr); //5x6
+    int startUOfMX = deltaPosition[x]+(text.length()*9/2)-(deltaUnitOfMeasure.length()*5/2);
+    if (startUOfMX < 0) startUOfMX = 0;
+    u8g2.drawStr(startUOfMX,62,deltaUnitOfMeasure.c_str()); 
+    if (sendBuffer) u8g2.sendBuffer();
+    Serial.println(curValues[delta] == "");
+    curValues[delta] = text;
+  }
 }
-void removeDelta() {
+void removeDelta(bool sendBuffer) {
+  Serial.println("remove: " + curValues[delta]);
   u8g2.setDrawColor(0);
-  u8g2.drawBox(deltaPosition[0],deltaPosition[1]-20,26,20);
-  u8g2.setDrawColor(0);
-  u8g2.drawBox(deltaPosition[0],deltaPosition[1]-20,54,10);
-  u8g2.sendBuffer();
+  int startX = deltaPosition[x];
+  int startY = deltaPosition[y]-15;
+  int length = (curValues[delta].length()+1)*9;
+  int height = 60-deltaPosition[y]+17+6;
+  u8g2.drawBox(startX,startY,length,height);
+  if (sendBuffer) u8g2.sendBuffer();
 }
 
-void printArrow(String direction) {
+void printArrow(String direction, bool sendBuffer) {
   removeArrow();
   u8g2.setDrawColor(1);
   u8g2.setFont(u8g2_font_unifont_t_86); // 16x16
   if (direction == "Flat") {
-    Serial.print("Print arrow: ");
-    Serial.println(direction);
-    u8g2.drawUTF8(arrowFlatPosition[0],arrowFlatPosition[1],"\u2b0c");
+//    Serial.print("Print arrow: ");
+//    Serial.println(direction);
+    u8g2.drawUTF8(arrowFlatPosition[x],arrowFlatPosition[y],"\u2b0c");
   }
   if (direction == "FortyFiveDown") {
-    Serial.print("Print arrow: ");
-    Serial.println(direction);
-    u8g2.drawUTF8(arrowDownPosition[0],arrowDownPosition[1],"\u2b0a");
+//    Serial.print("Print arrow: ");
+//    Serial.println(direction);
+    u8g2.drawUTF8(arrowDownPosition[x],arrowDownPosition[y],"\u2b0a");
   }
   if (direction == "FortyFiveUp") {
-    Serial.print("Print arrow: ");
-    Serial.println(direction);
-    u8g2.drawUTF8(arrowUpPosition[0],arrowUpPosition[1],"\u2b08");
+//    Serial.print("Print arrow: ");
+//    Serial.println(direction);
+    u8g2.drawUTF8(arrowUpPosition[x],arrowUpPosition[y],"\u2b08");
   }
   if (direction == "SingleDown") {
-    Serial.print("Print arrow: ");
-    Serial.println(direction);
-    u8g2.drawUTF8(arrowDownPosition[0],arrowDownPosition[1],"\u2b07");
+//    Serial.print("Print arrow: ");
+//    Serial.println(direction);
+    u8g2.drawUTF8(arrowDownPosition[x],arrowDownPosition[y],"\u2b07");
   }
   if (direction == "SingleUp") {
-    Serial.print("Print arrow: ");
-    Serial.println(direction);
-    u8g2.drawUTF8(arrowUpPosition[0],arrowUpPosition[1],"\u2b06");
+//    Serial.print("Print arrow: ");
+//    Serial.println(direction);
+    u8g2.drawUTF8(arrowUpPosition[x],arrowUpPosition[y],"\u2b06");
   }
   if (direction == "DoubleDown") {
-    Serial.print("Print arrow: ");
-    Serial.println(direction);
-    u8g2.drawUTF8(arrowDownPosition[0],arrowDownPosition[1],"\u2b07");
-    u8g2.drawUTF8(arrowDownPosition[0]+7,arrowDownPosition[1],"\u2b07");
+//    Serial.print("Print arrow: ");
+//    Serial.println(direction);
+    u8g2.drawUTF8(arrowDownPosition[x],arrowDownPosition[y],"\u2b07");
+    u8g2.drawUTF8(arrowDownPosition[x]+7,arrowDownPosition[y],"\u2b07");
   }
   if (direction == "DoubleUp") {
-    Serial.print("Print arrow: ");
-    Serial.println(direction);
-    u8g2.drawUTF8(arrowUpPosition[0],arrowUpPosition[1],"\u2b06");
-    u8g2.drawUTF8(arrowUpPosition[0]+7,arrowUpPosition[1],"\u2b06");
+//    Serial.print("Print arrow: ");
+//    Serial.println(direction);
+    u8g2.drawUTF8(arrowUpPosition[x],arrowUpPosition[y],"\u2b06");
+    u8g2.drawUTF8(arrowUpPosition[x]+7,arrowUpPosition[y],"\u2b06");
   }
-  u8g2.sendBuffer();
+  if (sendBuffer) u8g2.sendBuffer();
 }
-void removeArrow() {
+void removeArrow(bool sendBuffer) {
   u8g2.setDrawColor(0);
-  u8g2.drawBox(arrowUpPosition[0],arrowUpPosition[1],20,42);
-  u8g2.sendBuffer();
+  u8g2.drawBox(arrowUpPosition[x],0,20,42);
+  if (sendBuffer) u8g2.sendBuffer();
 }
 
-
-void printMainText(String text) {
+void printMainText(String text, bool sendBuffer) {
   Serial.print("Print main text: ");
   Serial.println(text.c_str());
   removeMainText();
@@ -321,62 +373,62 @@ void printMainText(String text) {
     u8g2.setFont(u8g2_font_fur35_tf);
   }
   u8g2.drawStr(0,42,text.c_str());
-  u8g2.sendBuffer();
+  if (sendBuffer) u8g2.sendBuffer();
 }
-void removeMainText() {
+void removeMainText(bool sendBuffer) {
   u8g2.setDrawColor(0);
   u8g2.drawBox(0,0,(30*3),42);
-  u8g2.sendBuffer();
+  if (sendBuffer) u8g2.sendBuffer();
 }
 
 void wifiBlink() {
   if (currentMillis - previousWifiBlinkMillis >= wifiBlinkInterval) {
     if (!wifiBlinkStatus) {
-      printWifi();
+      printWifi(true);
       Serial.println("Print WiFi");
     } else {
-      removeWifi();
+      removeWifi(true);
       Serial.println("Hide WiFi");
     }
     previousWifiBlinkMillis += wifiBlinkInterval;
   }
 }
-void printWifi() {
+void printWifi(bool sendBuffer) {
   removeWifi();
   u8g2.setDrawColor(1);
   u8g2.setFont(u8g2_font_siji_t_6x10); // 12x12
   u8g2.drawUTF8(118,12,"\ue04b");
-  u8g2.sendBuffer();
+  if (sendBuffer) u8g2.sendBuffer();
   wifiBlinkStatus = true;
 }
-void removeWifi() {
+void removeWifi(bool sendBuffer) {
   u8g2.setDrawColor(0);
   u8g2.drawBox(118,0,12,12);
-  u8g2.sendBuffer();
+  if (sendBuffer) u8g2.sendBuffer();
   wifiBlinkStatus = false;
 }
 
-void printMissingPhone() {
+void printMissingPhone(bool sendBuffer) {
   removeMissingPhone();
   u8g2.setDrawColor(1);
   u8g2.setFont(u8g2_font_siji_t_6x10); // 12x12
   u8g2.drawUTF8(118,26,"\ue141");
-  u8g2.sendBuffer();
+  if (sendBuffer) u8g2.sendBuffer();
 }
-void removeMissingPhone() {
+void removeMissingPhone(bool sendBuffer) {
   u8g2.setDrawColor(0);
   u8g2.drawBox(118,14,12,12);
-  u8g2.sendBuffer();
+  if (sendBuffer) u8g2.sendBuffer();
 }
 
-void printJsonError() {
+void printJsonError(bool sendBuffer) {
   u8g2.setDrawColor(1);
   u8g2.setFont(u8g2_font_siji_t_6x10); // 12x12
   u8g2.drawUTF8(118,42,"\ue0ae");
-  u8g2.sendBuffer();
+  if (sendBuffer) u8g2.sendBuffer();
 }
-void removeJsonError() {
+void removeJsonError(bool sendBuffer) {
   u8g2.setDrawColor(0);
   u8g2.drawBox(118,30,12,12);
-  u8g2.sendBuffer();
+  if (sendBuffer) u8g2.sendBuffer();
 }
